@@ -3,8 +3,14 @@ import numpy as np
 from keras.models import load_model
 from keras.utils import img_to_array
 from scipy.spatial import distance as dist
-from imutils import face_utils
-import dlib
+try:
+    from imutils import face_utils
+    import dlib
+    DLIB_AVAILABLE = True
+except ImportError:
+    DLIB_AVAILABLE = False
+    print("Warning: dlib not installed. DrowsinessDetector (dlib-based) will not work.")
+
 from collections import deque, Counter
 import mediapipe as mp
 
@@ -41,6 +47,8 @@ class EmotionDetector:
 
 class DrowsinessDetector:
     def __init__(self, predictor_path, ear_thresh=0.25, ear_frames=10, yawn_thresh=30, yawn_frames=15):
+        if not DLIB_AVAILABLE:
+            raise ImportError("dlib is not installed. Please install it or use MediaPipeDrowsinessDetector.")
         self.detector = dlib.get_frontal_face_detector() # Not strictly used if we pass rect from cascade, but good to have
         self.predictor = dlib.shape_predictor(predictor_path)
         

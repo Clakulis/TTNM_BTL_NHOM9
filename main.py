@@ -11,7 +11,7 @@ import time
 from view_results import view_results_from_csv, export_figure_to_pdf
 from detectors import EmotionDetector, DrowsinessDetector, MediaPipeDrowsinessDetector
 from pygame import mixer
-import dlib
+# import dlib
 
 # === CONFIGURATION ===
 # Paths
