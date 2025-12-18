@@ -9,14 +9,12 @@ import csv
 import numpy as np
 import time
 from view_results import view_results_from_csv, export_figure_to_pdf
-from detectors import EmotionDetector, DrowsinessDetector, MediaPipeDrowsinessDetector
+from detectors import EmotionDetector, MediaPipeDrowsinessDetector
 from pygame import mixer
-# import dlib
 
 # === CONFIGURATION ===
 # Paths
 MODEL_PATH = 'model.h5'
-PREDICTOR_PATH = "shape_predictor_68_face_landmarks.dat"
 HAAR_PATH = "haarcascade_frontalface_default.xml"
 
 # Sounds
@@ -57,8 +55,7 @@ class FocusTrackerApp(ctk.CTk):
         # Detectors
         try:
             self.emotion_detector = EmotionDetector(MODEL_PATH)
-            # self.drowsiness_detector = DrowsinessDetector(PREDICTOR_PATH) # Old Dlib detector
-            self.drowsiness_detector = MediaPipeDrowsinessDetector() # New MediaPipe detector
+            self.drowsiness_detector = MediaPipeDrowsinessDetector()
             self.face_cascade = cv2.CascadeClassifier(HAAR_PATH)
         except Exception as e:
             print(f"Error loading models: {e}")

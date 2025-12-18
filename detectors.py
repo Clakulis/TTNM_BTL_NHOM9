@@ -3,14 +3,6 @@ import numpy as np
 from keras.models import load_model
 from keras.utils import img_to_array
 from scipy.spatial import distance as dist
-try:
-    from imutils import face_utils
-    import dlib
-    DLIB_AVAILABLE = True
-except ImportError:
-    DLIB_AVAILABLE = False
-    print("Warning: dlib not installed. DrowsinessDetector (dlib-based) will not work.")
-
 from collections import deque, Counter
 import mediapipe as mp
 
@@ -44,80 +36,6 @@ class EmotionDetector:
         except Exception as e:
             print(f"Error in emotion detection: {e}")
             return "Neutral", "Neutral", np.zeros(len(self.labels))
-
-class DrowsinessDetector:
-    def __init__(self, predictor_path, ear_thresh=0.25, ear_frames=10, yawn_thresh=30, yawn_frames=15):
-        if not DLIB_AVAILABLE:
-            raise ImportError("dlib is not installed. Please install it or use MediaPipeDrowsinessDetector.")
-        self.detector = dlib.get_frontal_face_detector() # Not strictly used if we pass rect from cascade, but good to have
-        self.predictor = dlib.shape_predictor(predictor_path)
-        
-        # Thresholds
-        self.EAR_THRESH = ear_thresh
-        self.EAR_CONSEC_FRAMES = ear_frames
-        self.YAWN_THRESH = yawn_thresh
-        self.YAWN_CONSEC_FRAMES = yawn_frames
-        
-        # Counters
-        self.COUNTER = 0
-        self.YAWN_COUNTER = 0
-        
-        # State
-        self.alarm_on = False
-        self.yawn_alarm_on = False
-
-    def _eye_aspect_ratio(self, eye):
-        A = dist.euclidean(eye[1], eye[5])
-        B = dist.euclidean(eye[2], eye[4])
-        C = dist.euclidean(eye[0], eye[3])
-        return (A + B) / (2.0 * C)
-
-    def _lip_distance(self, shape):
-        top_lip = np.concatenate((shape[50:53], shape[61:64]))
-        low_lip = np.concatenate((shape[56:59], shape[65:68]))
-        return abs(np.mean(top_lip, axis=0)[1] - np.mean(low_lip, axis=0)[1])
-
-    def detect_drowsiness(self, gray_frame, rect):
-        """
-        Checks for drowsiness and yawning based on dlib landmarks.
-        Returns: (is_drowsy, is_yawning, ear_value, mar_value)
-        """
-        shape = self.predictor(gray_frame, rect)
-        shape = face_utils.shape_to_np(shape)
-
-        # 1. Calculate EAR
-        (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
-        (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
-        leftEye = shape[lStart:lEnd]
-        rightEye = shape[rStart:rEnd]
-        leftEAR = self._eye_aspect_ratio(leftEye)
-        rightEAR = self._eye_aspect_ratio(rightEye)
-        ear = (leftEAR + rightEAR) / 2.0
-
-        # 2. Calculate MAR (Lip Distance)
-        mar = self._lip_distance(shape)
-
-        # Check Drowsiness
-        is_drowsy = False
-        if ear < self.EAR_THRESH:
-            self.COUNTER += 1
-            if self.COUNTER >= self.EAR_CONSEC_FRAMES:
-                is_drowsy = True
-        else:
-            self.COUNTER = 0
-            is_drowsy = False
-
-        # Check Yawning
-        is_yawning = False
-        if mar > self.YAWN_THRESH:
-            self.YAWN_COUNTER += 1
-            if self.YAWN_COUNTER >= self.YAWN_CONSEC_FRAMES:
-                is_yawning = True
-        else:
-            self.YAWN_COUNTER = 0
-            is_yawning = False
-
-        return is_drowsy, is_yawning, ear, mar, shape
 
 class MediaPipeDrowsinessDetector:
     def __init__(self, ear_thresh=0.20, ear_frames=10, mar_thresh=0.5, smile_thresh=0.3, yawn_frames=15):
