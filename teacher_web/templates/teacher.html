@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HCI Real-Time Analytics</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        .status-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+        .online { background-color: #28a745; box-shadow: 0 0 5px #28a745; }
+        .offline { background-color: #6c757d; }
+        canvas { max-height: 150px; width: 100%; margin-bottom: 20px; }
+    </style>
+</head>
+<body class="bg-light p-4">
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-3">
+                <div class="bg-white p-3 rounded shadow h-100">
+                    <h4 class="mb-3">🏫 Class List</h4>
+                    <div id="connection-status" class="alert alert-warning py-1" style="font-size: 12px;">Connecting...</div>
+                    <div class="list-group" id="student-list">
+                        </div>
+                </div>
+            </div>
+
+            <div class="col-md-9">
+                <div class="bg-white p-3 rounded shadow h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4 id="graph-title">📊 Select a Student</h4>
+                        <span class="badge bg-secondary" id="graph-status">Waiting for Data...</span>
+                    </div>
+
+                    <h6>1. Emotion (Happy=+2, Neutral=+1, Sad=0, Angry=-1)</h6>
+                    <canvas id="emotionChart"></canvas>
+
+                    <h6>2. Face Presence (Blue = Detected)</h6>
+                    <canvas id="faceChart"></canvas>
+
+                    <h6>3. Alerts (Red=Drowsy, Orange=Yawn)</h6>
+                    <canvas id="alertChart"></canvas>
+
+                    <h6>4. Focus Score (0.0 to 1.0)</h6>
+                    <canvas id="focusChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let selectedStudentId = null;
+        let charts = {};
+
+        // Connection Status Debugging
+        socket.on('connect', () => {
+            document.getElementById('connection-status').className = 'alert alert-success py-1';
+            document.getElementById('connection-status').innerText = '🟢 Connected to Server';
+        });
+        socket.on('disconnect', () => {
+            document.getElementById('connection-status').className = 'alert alert-danger py-1';
+            document.getElementById('connection-status').innerText = '🔴 Disconnected';
+        });
+
+        // === 2. INITIALIZE CHARTS (Empty) ===
+        function initCharts() {
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false, 
+                elements: { point: { radius: 0 } }, 
+                scales: { x: { display: false } }
+            };
+
+            charts.emotion = new Chart(document.getElementById('emotionChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Emotion', borderColor: '#007bff', data: [], tension: 0.1 }] },
+                options: { ...commonOptions, scales: { y: { min: -3, max: 3 } } }
+            });
+
+            charts.face = new Chart(document.getElementById('faceChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Face', borderColor: 'blue', backgroundColor: 'rgba(0,0,255,0.2)', data: [], stepped: true, fill: true }] },
+                options: { ...commonOptions, scales: { y: { min: 0, max: 1.2 } } }
+            });
+
+            charts.alert = new Chart(document.getElementById('alertChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [
+                    { label: 'Drowsy', borderColor: 'red', data: [], stepped: true },
+                    { label: 'Yawn', borderColor: 'orange', data: [], stepped: true }
+                ]},
+                options: { ...commonOptions, scales: { y: { min: 0, max: 1.2 } } }
+            });
+
+            charts.focus = new Chart(document.getElementById('focusChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Focus Score', borderColor: 'purple', backgroundColor: 'rgba(128,0,128,0.1)', data: [], fill: true }] },
+                options: { ...commonOptions, scales: { y: { min: -3.5, max: 2.5 } } }
+            });
+        }
+
+        // === UPDATED SELECT FUNCTION ===
+        function selectStudent(id, name) {
+            selectedStudentId = id;
+            document.getElementById('graph-title').innerText = `📊 Viewing: ${name}`;
+            document.getElementById('graph-status').innerText = "Loading History...";
+            document.getElementById('graph-status').className = "badge bg-warning";
+
+            // 1. CLEAR GRAPHS IMMEDIATELY (Visual Feedback)
+            const empty = [];
+            charts.emotion.data.labels = empty; charts.emotion.data.datasets[0].data = empty; charts.emotion.update();
+            charts.face.data.labels = empty;    charts.face.data.datasets[0].data = empty;    charts.face.update();
+            charts.alert.data.labels = empty;   charts.alert.data.datasets[0].data = empty;   charts.alert.data.datasets[1].data = empty; charts.alert.update();
+            charts.focus.data.labels = empty;   charts.focus.data.datasets[0].data = empty;   charts.focus.update();
+
+            // 2. ASK SERVER FOR DATA IMMEDIATELY
+            socket.emit('get_student_data', { student_id: id });
+        }
+
+        socket.on('class_status_update', (students) => {
+            const listDiv = document.getElementById('student-list');
+            listDiv.innerHTML = ''; 
+
+            students.forEach(s => {
+                const isActive = (s.student_id === selectedStudentId);
+                const item = document.createElement('a');
+                item.href = "#";
+                item.className = `list-group-item list-group-item-action ${isActive ? 'active' : ''}`;
+                item.innerHTML = `
+                    <div class="d-flex w-100 justify-content-between">
+                        <h6 class="mb-1">${s.name}</h6>
+                        <small class="badge ${s.status === 'ONLINE' ? 'bg-success' : 'bg-secondary'}">${s.status}</small>
+                    </div>
+                `;
+                item.onclick = (e) => {
+                    e.preventDefault();
+                    selectStudent(s.student_id, s.name);
+                };
+                listDiv.appendChild(item);
+            });
+        });
+
+        const EMOTION_MAP = { 'Happy': 2, 'Surprise': 2, 'Neutral': 1, 'Sad': 0, 'Angry': -1, 'Fear': -2, 'Disgust': -3 };
+
+        socket.on('student_graph_update', (payload) => {
+            // [NEW] AUTO-SELECT FIX:
+            // If no student is selected yet, select the first one that sends data
+            if (selectedStudentId === null) {
+                selectStudent(payload.student_id, "Student " + payload.student_id);
+            }
+
+            // Only update if this is the currently viewed student
+            if (payload.student_id === selectedStudentId) {
+                const history = payload.history;
+                
+                // Prepare Data
+                const labels = history.map(h => h.time);
+                const emotionData = history.map(h => EMOTION_MAP[h.emotion] || 0);
+                const faceData = history.map(h => h.face_detected);
+                const drowsyData = history.map(h => h.drowsy);
+                const yawnData = history.map(h => h.yawn);
+                const focusData = history.map(h => h.focus_score);
+
+                // Update Charts
+                charts.emotion.data.labels = labels;
+                charts.emotion.data.datasets[0].data = emotionData;
+                charts.emotion.update();
+
+                charts.face.data.labels = labels;
+                charts.face.data.datasets[0].data = faceData;
+                charts.face.update();
+
+                charts.alert.data.labels = labels;
+                charts.alert.data.datasets[0].data = drowsyData;
+                charts.alert.data.datasets[1].data = yawnData;
+                charts.alert.update();
+
+                charts.focus.data.labels = labels;
+                charts.focus.data.datasets[0].data = focusData;
+                charts.focus.update();
+
+                document.getElementById('graph-status').innerText = "Live Data";
+                document.getElementById('graph-status').className = "badge bg-success";
+            }
+        });
+
+        initCharts();
+    </script>
+</body>
+</html>

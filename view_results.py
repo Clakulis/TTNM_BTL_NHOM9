@@ -1,172 +1,219 @@
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.backends.backend_pdf import PdfPages
 import tkinter as tk
 from tkinter import ttk
+from matplotlib.figure import Figure 
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
+# ==========================================
+# 1. GUI FUNCTION (View in Window)
+# ==========================================
 def view_results_from_csv(tab_widget, csv_path):
+    # 1. Clear previous widgets
     for widget in tab_widget.winfo_children():
         widget.destroy()
 
-    # ========== Scrollable canvas setup ==========
+    # 2. Setup Scrollable Canvas
     canvas = tk.Canvas(tab_widget)
     scrollbar = ttk.Scrollbar(tab_widget, orient="vertical", command=canvas.yview)
     scrollable_frame = ttk.Frame(canvas)
 
     scrollable_frame.bind(
         "<Configure>",
-        lambda e: canvas.configure(
-            scrollregion=canvas.bbox("all")
-        )
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
     )
 
-    window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
     canvas.configure(yscrollcommand=scrollbar.set)
-
-    def resize_canvas(event):
-        canvas.itemconfig(window_id, width=event.width)
-
-    canvas.bind("<Configure>", resize_canvas)
 
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
+    # Mousewheel scrolling
     def _on_mousewheel(event):
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+    
+    # Bind mousewheel only when hovering over canvas
+    canvas.bind("<Enter>", lambda _: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+    canvas.bind("<Leave>", lambda _: canvas.unbind_all("<MouseWheel>"))
 
-    # ========== Data loading and processing ==========
-    df = pd.read_csv(csv_path)
-    df['Emotion'] = df['Emotion'].fillna('').astype(str)
+    # 3. Load and Process Data
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as e:
+        lbl = tk.Label(scrollable_frame, text=f"Error reading file: {e}", fg="red")
+        lbl.pack(pady=20)
+        return
+
+    if df.empty:
+        lbl = tk.Label(scrollable_frame, text="No data available yet.", fg="gray")
+        lbl.pack(pady=20)
+        return
+
+    # Data Type Conversions
     df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-    df['DrowsinessAlert'] = df['DrowsinessAlert'].astype(str) == 'Yes'
-    df['YawnAlert'] = df['YawnAlert'].astype(str) == 'Yes'
-    df['priority'] = (df['DrowsinessAlert'] | df['YawnAlert'] == 'Yes').astype(int)
-    df['FaceMissing'] = df['FaceMissing'].astype(str) == 'Yes'
+    df['Emotion'] = df['Emotion'].fillna('Neutral').astype(str)
+    
+    # Standardize Booleans (Handle 'Yes'/'No' strings)
+    for col in ['DrowsinessAlert', 'YawnAlert', 'FaceMissing']:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: 1 if str(x) == 'Yes' else 0)
+
+    # Focus Score Logic
     emotion_score_map = {
         'Happy': 2, 'Surprise': 2, 'Neutral': 1,
         'Sad': 0, 'Angry': -1, 'Fear': -2, 'Disgust': -3
     }
 
     def compute_focus_score(row):
-        if row['FaceMissing']:
+        # Priority: FaceMissing (-1) -> Drowsy (-3) -> Yawn (-2) -> Emotion
+        if row.get('FaceMissing', 0) == 1:
             return -1
-        elif row['DrowsinessAlert']:
+        elif row.get('DrowsinessAlert', 0) == 1:
             return -3
-        elif row['YawnAlert']:
+        elif row.get('YawnAlert', 0) == 1:
             return -2
         else:
             return emotion_score_map.get(row['Emotion'], 0)
 
     df['FocusScore'] = df.apply(compute_focus_score, axis=1)
-    total_score = df['FocusScore'].sum()
-    avg_score = df['FocusScore'].mean()
 
-    def on_resize(event):
-        canvas.itemconfig("all", width=event.width)
-
-        canvas.bind("<Configure>", on_resize)
-
-    # ========== Function to add each chart ==========
-    def add_plot(fig, parent):
-        frame = ttk.Frame(parent)
-        frame.pack(fill='both', expand=True, pady=20)
-
-        canvas = FigureCanvasTkAgg(fig, master=frame)
-        canvas.draw()
-
-        widget = canvas.get_tk_widget()
-        widget.pack(fill='both', expand=True)
-
-    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    # 4. Resampling Logic (Prevent graph overcrowding)
     duration = (df['Timestamp'].max() - df['Timestamp'].min()).total_seconds()
-
-    resample_interval = None
-    if duration > 1800:
-        resample_interval = '30S'
-    elif duration > 900:
-        resample_interval = '10S'
-    elif duration > 300:
-        resample_interval = '5S'
-
-    def mode_agg(series):
-        try:
-            return series.mode()[0]
-        except IndexError:
-            return series.iloc[0]
-
     df = df.set_index('Timestamp')
 
+    resample_interval = None
+    if duration > 1800: resample_interval = '30s'
+    elif duration > 900: resample_interval = '10s'
+    elif duration > 300: resample_interval = '5s'
+
     if resample_interval:
-        df_resampled = df.resample(resample_interval).agg({
-            'Emotion': mode_agg,
+        # Define how to aggregate different columns
+        agg_dict = {
+            'Emotion': lambda x: x.mode()[0] if not x.mode().empty else 'Neutral',
             'DrowsinessAlert': 'max',
             'YawnAlert': 'max',
+            'FaceMissing': 'max',
             'FocusScore': 'mean'
-        }).dropna().reset_index()
-        df = df_resampled.reset_index(drop=True)
+        }
+        # Only aggregate existing columns
+        valid_agg = {k: v for k, v in agg_dict.items() if k in df.columns}
+        df = df.resample(resample_interval).agg(valid_agg).dropna().reset_index()
     else:
         df = df.reset_index()
 
-    df = df.sort_values(by=['Timestamp', 'priority'], ascending=[True, False])
-    df = df.drop_duplicates(subset='Timestamp', keep='first')
+    total_score = df['FocusScore'].sum()
+    avg_score = df['FocusScore'].mean()
 
-    # 1. Cảm xúc theo thời gian
-    fig1, ax1 = plt.subplots(figsize=(10, 4))
-    ax1.plot(df['Timestamp'], df['Emotion'], marker='o', linestyle='-', alpha=0.7, markersize=2)
-    ax1.set_title("Cảm xúc theo thời gian")
-    ax1.tick_params(axis='x', rotation=45)
-    ax1.grid(True)
-    fig1.tight_layout()
-    add_plot(fig1, scrollable_frame)
+    # ================= PLOTTING HELPERS =================
+    def add_figure_to_frame(fig):
+        frame = ttk.Frame(scrollable_frame)
+        frame.pack(fill='both', expand=True, pady=10, padx=10)
+        
+        canvas_plot = FigureCanvasTkAgg(fig, master=frame)
+        canvas_plot.draw()
+        canvas_plot.get_tk_widget().pack(fill='both', expand=True)
 
-    # 2. Tần suất cảm xúc
-    fig2, ax2 = plt.subplots(figsize=(6, 4))
-    ax2.plot(df['Timestamp'], ~df['FaceMissing'], color='blue', marker='o')
-    ax2.set_title("Trạng thái khuôn mặt trong khung hình")
+    # Graph 1: Emotion Over Time
+    fig1 = Figure(figsize=(10, 4), dpi=100)
+    ax1 = fig1.add_subplot(111)
+    ax1.plot(df['Timestamp'], df['Emotion'], marker='o', linestyle='-', alpha=0.7, markersize=3)
+    ax1.set_title("Emotion Timeline")
+    ax1.grid(True, linestyle='--', alpha=0.6)
+    fig1.autofmt_xdate()
+    add_figure_to_frame(fig1)
+
+    # Graph 2: Face Presence
+    fig2 = Figure(figsize=(10, 3), dpi=100)
+    ax2 = fig2.add_subplot(111)
+    # Invert FaceMissing logic for display: 1 = Face Present
+    face_present = df['FaceMissing'].apply(lambda x: 0 if x==1 else 1)
+    ax2.fill_between(df['Timestamp'], face_present, step="pre", alpha=0.4, color='blue')
+    ax2.set_title("Face Presence (1=Present, 0=Missing)")
     ax2.set_yticks([0, 1])
-    ax2.set_yticklabels(['Mất mặt', 'Có mặt'])
-    ax2.tick_params(axis='x', rotation=45)
-    ax2.grid(True)
-    fig2.tight_layout()
-    add_plot(fig2, scrollable_frame)
+    ax2.grid(True, linestyle='--', alpha=0.6)
+    fig2.autofmt_xdate()
+    add_figure_to_frame(fig2)
 
-    # 3. Cảnh báo buồn ngủ/ngáp
-    fig3, ax3 = plt.subplots(figsize=(10, 4))
-
-    ax3.step(df['Timestamp'], df['DrowsinessAlert'].astype(int), where='post', label='Buồn ngủ', color='red')
-    ax3.step(df['Timestamp'], df['YawnAlert'].astype(int), where='post', label='Ngáp', color='orange')
-
-    ax3.set_title("Cảnh báo buồn ngủ và ngáp")
-    ax3.set_ylabel("Cảnh báo")
+    # Graph 3: Alerts
+    fig3 = Figure(figsize=(10, 4), dpi=100)
+    ax3 = fig3.add_subplot(111)
+    ax3.step(df['Timestamp'], df['DrowsinessAlert'], where='post', label='Drowsy', color='red')
+    ax3.step(df['Timestamp'], df['YawnAlert'], where='post', label='Yawn', color='orange')
+    ax3.set_title("Alert Events")
     ax3.set_yticks([0, 1])
-    ax3.set_yticklabels(['Không', 'Có'])
+    ax3.set_yticklabels(['No', 'Yes'])
     ax3.legend()
-    ax3.grid(True)
-    ax3.tick_params(axis='x', rotation=45)
+    ax3.grid(True, linestyle='--', alpha=0.6)
+    fig3.autofmt_xdate()
+    add_figure_to_frame(fig3)
 
-    fig3.tight_layout()
-    add_plot(fig3, scrollable_frame)
+    # Graph 4: Focus Score
+    fig4 = Figure(figsize=(10, 4), dpi=100)
+    ax4 = fig4.add_subplot(111)
+    ax4.plot(df['Timestamp'], df['FocusScore'], color='purple', marker='.', linestyle='-')
+    ax4.axhline(0, color='black', linewidth=0.8)
+    ax4.set_title(f"Focus Score (Avg: {avg_score:.2f})")
+    ax4.grid(True, linestyle='--', alpha=0.6)
+    fig4.autofmt_xdate()
+    add_figure_to_frame(fig4)
 
-    # 4. Điểm tập trung
-    fig4, ax4 = plt.subplots(figsize=(10, 4))
-    ax4.plot(df['Timestamp'], df['FocusScore'], color='green', marker='o', markersize=2)
-    ax4.axhline(0, color='gray', linestyle='--', linewidth=0.8)
-    ax4.set_title(f"Điểm tập trung (Tổng: {total_score}, TB: {avg_score:.2f})")
-    ax4.tick_params(axis='x', rotation=45)
-    fig4.tight_layout()
-    add_plot(fig4, scrollable_frame)
 
-def export_figure_to_pdf(tab_widget, csv_path):
-    from matplotlib.backends.backend_pdf import PdfPages
-    import matplotlib._pylab_helpers
+# ==========================================
+# 2. PDF GENERATION FUNCTION (Minio Upload)
+# ==========================================
+def generate_pdf_report(csv_path, output_pdf_path):
+    """Generates a PDF report from the CSV log."""
+    try:
+        df = pd.read_csv(csv_path)
+        
+        # Data Cleaning
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+        df['Emotion'] = df['Emotion'].fillna('Neutral').astype(str)
+        
+        # Convert Yes/No to 1/0
+        for col in ['DrowsinessAlert', 'YawnAlert', 'FaceMissing']:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: 1 if str(x) == 'Yes' else 0)
 
-    figures = [manager.canvas.figure for manager in matplotlib._pylab_helpers.Gcf.get_all_fig_managers()]
-    if not figures:
-        return
+        # Focus Score Logic
+        scores = {'Happy': 2, 'Surprise': 2, 'Neutral': 1, 'Sad': 0, 'Angry': -1, 'Fear': -2, 'Disgust': -3}
+        def get_score(row):
+            if row.get('FaceMissing', 0): return -1
+            if row.get('DrowsinessAlert', 0): return -3
+            if row.get('YawnAlert', 0): return -2
+            return scores.get(row.get('Emotion'), 0)
 
-    pdf_filename = csv_path.replace(".csv", "_result.pdf")
-    with PdfPages(pdf_filename) as pdf:
-        for fig in figures:
-            pdf.savefig(fig)
+        df['FocusScore'] = df.apply(get_score, axis=1)
+
+        # Generate PDF
+        with PdfPages(output_pdf_path) as pdf:
+            # Page 1: Focus & Emotion
+            fig1, ax1 = plt.subplots(figsize=(10, 6))
+            ax1.plot(df['Timestamp'], df['FocusScore'], color='purple', label='Focus Score')
+            ax1.set_title(f"Focus Score Report (Avg: {df['FocusScore'].mean():.2f})")
+            ax1.set_ylabel("Score (-3 to +2)")
+            ax1.grid(True)
+            ax1.legend()
+            fig1.autofmt_xdate()
+            pdf.savefig(fig1)
+            plt.close()
+            
+            # Page 2: Alerts
+            fig2, ax2 = plt.subplots(figsize=(10, 6))
+            ax2.plot(df['Timestamp'], df['DrowsinessAlert'], color='red', label='Drowsiness')
+            ax2.plot(df['Timestamp'], df['YawnAlert'], color='orange', label='Yawn', alpha=0.7)
+            ax2.set_title("Alert Timeline")
+            ax2.set_yticks([0, 1])
+            ax2.set_yticklabels(['Safe', 'Alert'])
+            ax2.legend()
+            ax2.grid(True)
+            fig2.autofmt_xdate()
+            pdf.savefig(fig2)
+            plt.close()
+            
+        return True
+    except Exception as e:
+        print(f"PDF Error: {e}")
+        return False
